@@ -4,6 +4,7 @@ from core.models import User
 from social_protection.workflows.utils import DataUploadWorkflow
 from social_protection.services import BeneficiaryImportService
 from social_protection.models import BenefitPlan
+from django.db import connection
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +16,15 @@ def process_import_beneficiaries_workflow(user_uuid, benefit_plan_uuid, upload_u
     service = DataUploadWorkflow(benefit_plan_uuid, upload_uuid, user_uuid)
     service.validate_dataframe_headers()
     if benefit_plan.type == BenefitPlan.BenefitPlanType.INDIVIDUAL_TYPE:
-        service.execute(upload_sql)
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT process_import_beneficiaries(%s, %s, %s)",
+                           [upload_uuid, user_uuid, benefit_plan_uuid])
+        # service.execute(upload_sql)
     else:
-        service.execute(upload_sql_group_version)
+        # service.execute(upload_sql_group_version)
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT process_import_beneficiaries_group(%s, %s, %s)",
+                           [upload_uuid, user_uuid, benefit_plan_uuid])
     BeneficiaryImportService(user).synchronize_data_for_reporting(upload_uuid, benefit_plan)
 
 
