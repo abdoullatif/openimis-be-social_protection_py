@@ -1,5 +1,6 @@
 import logging
 import re
+import json
 
 from collections import namedtuple
 from django.db.models.query import QuerySet
@@ -72,9 +73,15 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
                 value = filter_part['value']
                 field = filter_part['field'] + '__' + filter_part['filter']
             else:
-                field, value = filter_part.split('=')
-                field, value_type = field.rsplit('__', 1)
-            value = self.__cast_value(value, value_type)
+                try:
+                    field, raw_value = filter_part.split("=", 1)
+                    field, value_type = field.rsplit("__", 1)
+                    value = raw_value
+                except ValueError:
+                    logger.error(f"Invalid filter format: {filter_part}")
+                    continue
+
+            value = value.get('name', '') if isinstance(value, dict) else self.__cast_value(value, value_type)
             filter_kwargs = {f"{relation}__json_ext__{field}" if relation else f"json_ext__{field}": value}
             query = query.filter(**filter_kwargs).distinct()
         return query
@@ -113,24 +120,25 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
     def __cast_value(self, value: str, value_type: str):
         if value_type == 'integer':
             return int(value)
-        elif value_type == 'string':
-            return str(value[1:-1])
         elif value_type == 'numeric':
             return float(value)
         elif value_type == 'boolean':
             cleaned_value = self.__remove_unexpected_chars(value)
-            if cleaned_value.lower() == 'true':
-                return True
-            elif cleaned_value.lower() == 'false':
-                return False
+            return cleaned_value.lower() == 'true'
         elif value_type == 'date':
-            # Perform date parsing logic here
-            # Assuming you have a specific date format, you can use datetime.strptime
-            # Example: return datetime.strptime(value, '%Y-%m-%d').date()
-            pass
+            # parser avec datetime.strptime si besoin
+            return value
+        elif value_type == 'string':
+            # Si c'est un JSON -> essayer de parser
+            try:
+                obj = json.loads(value)
+                if isinstance(obj, dict):
+                    return obj.get("name", "")  # récupère uniquement le "name"
+                return str(obj)
+            except Exception as e:
+                return str(value).strip('"')
 
-        # Return None if the value type is not recognized
-        return None
+        return value
 
     def __remove_unexpected_chars(self, string: str):
         pattern = r'[^\w\s]'  # Remove any character that is not alphanumeric or whitespace
