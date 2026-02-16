@@ -15,6 +15,7 @@ class Command(BaseCommand):
         BeneficiaryDocument.init(index='beneficiary')
         # Loop through Beneficiary objects and index them
         for beneficiary in Beneficiary.objects.all():
+            location_data = BeneficiaryDocument().prepare_location(beneficiary)
             beneficiary_document = BeneficiaryDocument(
                 meta={'id': beneficiary.id},  # Set the ID
                 benefit_plan={
@@ -26,6 +27,7 @@ class Command(BaseCommand):
                     'last_name': beneficiary.individual.last_name,
                     'dob': beneficiary.individual.dob,
                 },
+                location=location_data,
                 id=beneficiary.id,
                 status=beneficiary.status,
                 json_ext=beneficiary.json_ext,

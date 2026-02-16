@@ -29,6 +29,15 @@ if 'opensearch_reports' in apps.app_configs and not is_unit_test_env:
         )
         date_created = opensearch_fields.DateField()
         json_ext = opensearch_fields.ObjectField()
+        location = opensearch_fields.ObjectField(properties={
+            'code': opensearch_fields.KeywordField(),
+            'name': opensearch_fields.KeywordField(),
+            'type': opensearch_fields.KeywordField(),
+            'region': opensearch_fields.KeywordField(),
+            'prefecture': opensearch_fields.KeywordField(),
+            'sous_prefecture': opensearch_fields.KeywordField(),
+            'district': opensearch_fields.KeywordField(),
+        })
 
         class Index:
             name = 'beneficiary'
@@ -56,6 +65,50 @@ if 'opensearch_reports' in apps.app_configs and not is_unit_test_env:
             json_ext_data = instance.json_ext
             json_data = self.__flatten_dict(json_ext_data)
             return json_data
+
+        def prepare_location(self, instance):
+            individual = getattr(instance, 'individual', None)
+            location = getattr(individual, 'location', None)
+            if not location and individual:
+                group_rel = individual.groupindividuals.select_related('group__location').first()
+                if group_rel and group_rel.group and group_rel.group.location:
+                    location = group_rel.group.location
+
+            if not location and individual and getattr(individual, 'json_ext', None):
+                json_ext = individual.json_ext or {}
+                return {
+                    'region': json_ext.get('region'),
+                    'prefecture': json_ext.get('prefecture'),
+                    'sous_prefecture': json_ext.get('sous_prefecture'),
+                    'district': json_ext.get('district'),
+                }
+
+            if not location:
+                return None
+
+            data = {
+                'code': location.code,
+                'name': location.name,
+                'type': location.type,
+            }
+
+            current = location
+            while current:
+                loc_type = getattr(current, 'type', None)
+                if loc_type == 'R':
+                    data.setdefault('region', current.name)
+                    data.setdefault('prefecture', current.name)
+                elif loc_type == 'P':
+                    data.setdefault('prefecture', current.name)
+                elif loc_type == 'S':
+                    data.setdefault('sous_prefecture', current.name)
+                elif loc_type == 'D':
+                    data.setdefault('district', current.name)
+                elif loc_type == 'W':
+                    data.setdefault('sous_prefecture', current.name)
+                current = current.parent
+
+            return data
 
         def __flatten_dict(self, d, parent_key='', sep='__'):
             items = {}
