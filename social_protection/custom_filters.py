@@ -50,8 +50,16 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
         """
         benefit_plan_id = kwargs.get('uuid', None)
         additional_params = kwargs.get('additional_params', None)
+        if not benefit_plan_id and isinstance(additional_params, dict):
+            benefit_plan_id = (
+                additional_params.get('benefitPlan')
+                or additional_params.get('benefit_plan_id')
+            )
         if benefit_plan_id:
-            benefit_plan_query = BenefitPlan.objects.filter(id=benefit_plan_id)
+            benefit_plan_query = BenefitPlan.objects.filter(
+                id=benefit_plan_id,
+                is_deleted=False,
+            )
         else:
             benefit_plan_query = BenefitPlan.objects.filter(is_deleted=False, beneficiary_data_schema__isnull=False)
             if additional_params and 'type' in additional_params:
@@ -97,6 +105,10 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
         return query
 
     def suggest_filter_values(self, field: str, search: str, limit: int = 20, **kwargs) -> List[dict]:
+        search = (search or "").strip()
+        if not search:
+            return []
+
         benefit_plan = self._resolve_benefit_plan_for_suggestions(**kwargs)
         if not benefit_plan:
             return []
@@ -169,69 +181,6 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
         return {}
 
     @staticmethod
-    def _resolve_parent_custom_filters(**kwargs) -> List:
-        """
-        Critères déjà posés (ex. plan de paiement filtré sur Gaoual) pour restreindre les suggestions.
-        """
-        additional_params = kwargs.get("additional_params") or {}
-        if not isinstance(additional_params, dict):
-            return []
-
-        explicit = (
-            additional_params.get("scopedCustomFilters")
-            or additional_params.get("parentCustomFilters")
-        )
-        if explicit:
-            return explicit if isinstance(explicit, list) else []
-
-        payment_plan_id = (
-            additional_params.get("paymentPlanId")
-            or additional_params.get("payment_plan_id")
-        )
-        if not payment_plan_id:
-            return []
-
-        try:
-            from contribution_plan.models import PaymentPlan
-
-            payment_plan = PaymentPlan.objects.filter(
-                id=payment_plan_id,
-                is_deleted=False,
-            ).first()
-            if not payment_plan:
-                return []
-            plan_ext = BenefitPlanCustomFilterWizard._resolve_json_ext_dict(
-                payment_plan.json_ext
-            )
-            return extract_custom_filters_from_json_ext(plan_ext)
-        except Exception as exc:
-            logger.warning(
-                "Could not load parent filters from payment plan %s: %s",
-                payment_plan_id,
-                exc,
-            )
-            return []
-
-    @classmethod
-    def _base_beneficiary_queryset(cls, benefit_plan: BenefitPlan, **kwargs) -> QuerySet:
-        queryset = Beneficiary.objects.filter(
-            benefit_plan=benefit_plan,
-            status=BeneficiaryStatus.ACTIVE,
-            is_deleted=False,
-        )
-        parent_filters = cls._resolve_parent_custom_filters(**kwargs)
-        if not parent_filters:
-            return queryset
-
-        return CustomFilterWizardStorage.build_custom_filters_queryset(
-            CUSTOM_FILTER_MODULE,
-            cls.OBJECT_CLASS.__name__,
-            parent_filters,
-            queryset,
-            relation="individual",
-        )
-
-    @staticmethod
     def _json_ext_field_path(field: str, relation: Optional[str] = None) -> str:
         if relation:
             return f"{relation}__json_ext__{field}"
@@ -262,7 +211,11 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
         field_path = BenefitPlanCustomFilterWizard._json_ext_field_path(field, relation)
         lookup = f"{field_path}__icontains"
         queryset = (
-            BenefitPlanCustomFilterWizard._base_beneficiary_queryset(benefit_plan, **kwargs)
+            Beneficiary.objects.filter(
+                benefit_plan=benefit_plan,
+                status=BeneficiaryStatus.ACTIVE,
+                is_deleted=False,
+            )
             .exclude(**{f"{field_path}__isnull": True})
             .exclude(**{field_path: ""})
             .filter(**{lookup: search})
@@ -328,16 +281,25 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
             if schema and 'properties' in schema:
                 properties = schema['properties']
                 for key, value in properties.items():
-                    if key not in existing_keys:
-                        tuple_with_definition = tuple_type(
-                            field=key,
-                            filter=self.FILTERS_BASED_ON_FIELD_TYPE[value['type']],
-                            type=value['type'],
-                            referential=value['referential'] if 'referential' in value else None,
-                            typeLocation=value['typeLocation'] if 'typeLocation' in value else None
+                    if key in existing_keys or not isinstance(value, dict):
+                        continue
+                    field_type = value.get('type')
+                    if field_type not in self.FILTERS_BASED_ON_FIELD_TYPE:
+                        logger.warning(
+                            'Skipping unsupported custom filter field %s (type=%s) in benefit plan schema',
+                            key,
+                            field_type,
                         )
-                        tuples_with_definitions.append(tuple_with_definition)
-                        existing_keys.add(key)
+                        continue
+                    tuple_with_definition = tuple_type(
+                        field=key,
+                        filter=self.FILTERS_BASED_ON_FIELD_TYPE[field_type],
+                        type=field_type,
+                        referential=value.get('referential'),
+                        typeLocation=value.get('typeLocation'),
+                    )
+                    tuples_with_definitions.append(tuple_with_definition)
+                    existing_keys.add(key)
 
             else:
                 logger.warning('Cannot retrieve definitions of filters based '
