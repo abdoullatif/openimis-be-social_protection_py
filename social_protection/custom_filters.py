@@ -4,11 +4,16 @@ import json
 
 from collections import namedtuple
 from django.db.models.query import QuerySet
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from core.custom_filters import CustomFilterWizardInterface
-from core.custom_filters.filter_condition_utils import parse_custom_filter_part
+from core.custom_filters import CustomFilterWizardInterface, CustomFilterWizardStorage
+from core.custom_filters.filter_condition_utils import (
+    extract_custom_filters_from_json_ext,
+    parse_custom_filter_part,
+)
 from social_protection.models import BenefitPlan, Beneficiary, BeneficiaryStatus
+
+CUSTOM_FILTER_MODULE = "social_protection"
 
 
 logger = logging.getLogger(__name__)
@@ -109,11 +114,11 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
         if field_type in ("string", "integer", "numeric", "number", "decimal"):
             # Mode A (prioritaire) : valeurs texte déjà présentes dans json_ext
             suggestions = self._distinct_json_ext_suggestions(
-                benefit_plan, field, search, limit, relation="individual"
+                benefit_plan, field, search, limit, relation="individual", **kwargs
             )
             if not suggestions:
                 suggestions = self._distinct_json_ext_suggestions(
-                    benefit_plan, field, search, limit, relation=None
+                    benefit_plan, field, search, limit, relation=None, **kwargs
                 )
             if suggestions:
                 return suggestions
@@ -150,6 +155,83 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
         return [item for item in options if needle in item["label"]][:limit]
 
     @staticmethod
+    def _resolve_json_ext_dict(raw: Any) -> dict:
+        if not raw:
+            return {}
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                return parsed if isinstance(parsed, dict) else {}
+            except (TypeError, ValueError):
+                return {}
+        return {}
+
+    @staticmethod
+    def _resolve_parent_custom_filters(**kwargs) -> List:
+        """
+        Critères déjà posés (ex. plan de paiement filtré sur Gaoual) pour restreindre les suggestions.
+        """
+        additional_params = kwargs.get("additional_params") or {}
+        if not isinstance(additional_params, dict):
+            return []
+
+        explicit = (
+            additional_params.get("scopedCustomFilters")
+            or additional_params.get("parentCustomFilters")
+        )
+        if explicit:
+            return explicit if isinstance(explicit, list) else []
+
+        payment_plan_id = (
+            additional_params.get("paymentPlanId")
+            or additional_params.get("payment_plan_id")
+        )
+        if not payment_plan_id:
+            return []
+
+        try:
+            from contribution_plan.models import PaymentPlan
+
+            payment_plan = PaymentPlan.objects.filter(
+                id=payment_plan_id,
+                is_deleted=False,
+            ).first()
+            if not payment_plan:
+                return []
+            plan_ext = BenefitPlanCustomFilterWizard._resolve_json_ext_dict(
+                payment_plan.json_ext
+            )
+            return extract_custom_filters_from_json_ext(plan_ext)
+        except Exception as exc:
+            logger.warning(
+                "Could not load parent filters from payment plan %s: %s",
+                payment_plan_id,
+                exc,
+            )
+            return []
+
+    @classmethod
+    def _base_beneficiary_queryset(cls, benefit_plan: BenefitPlan, **kwargs) -> QuerySet:
+        queryset = Beneficiary.objects.filter(
+            benefit_plan=benefit_plan,
+            status=BeneficiaryStatus.ACTIVE,
+            is_deleted=False,
+        )
+        parent_filters = cls._resolve_parent_custom_filters(**kwargs)
+        if not parent_filters:
+            return queryset
+
+        return CustomFilterWizardStorage.build_custom_filters_queryset(
+            CUSTOM_FILTER_MODULE,
+            cls.OBJECT_CLASS.__name__,
+            parent_filters,
+            queryset,
+            relation="individual",
+        )
+
+    @staticmethod
     def _json_ext_field_path(field: str, relation: Optional[str] = None) -> str:
         if relation:
             return f"{relation}__json_ext__{field}"
@@ -175,15 +257,12 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
         search: str,
         limit: int,
         relation: Optional[str] = None,
+        **kwargs,
     ) -> List[dict]:
         field_path = BenefitPlanCustomFilterWizard._json_ext_field_path(field, relation)
         lookup = f"{field_path}__icontains"
         queryset = (
-            Beneficiary.objects.filter(
-                benefit_plan=benefit_plan,
-                status=BeneficiaryStatus.ACTIVE,
-                is_deleted=False,
-            )
+            BenefitPlanCustomFilterWizard._base_beneficiary_queryset(benefit_plan, **kwargs)
             .exclude(**{f"{field_path}__isnull": True})
             .exclude(**{field_path: ""})
             .filter(**{lookup: search})
