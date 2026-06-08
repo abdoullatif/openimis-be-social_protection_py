@@ -4,10 +4,11 @@ import json
 
 from collections import namedtuple
 from django.db.models.query import QuerySet
-from typing import List
+from typing import List, Optional
 
 from core.custom_filters import CustomFilterWizardInterface
-from social_protection.models import BenefitPlan
+from core.custom_filters.filter_condition_utils import parse_custom_filter_part
+from social_protection.models import BenefitPlan, Beneficiary, BeneficiaryStatus
 
 
 logger = logging.getLogger(__name__)
@@ -68,23 +69,136 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
         :return: The updated queryset with additional filters applied for example: Queryset[Beneficiary].
         """
         for filter_part in custom_filters:
-            if isinstance(filter_part, dict):
-                value_type = filter_part['type']
-                value = filter_part['value']
-                field = filter_part['field'] + '__' + filter_part['filter']
-            else:
-                try:
-                    field, raw_value = filter_part.split("=", 1)
-                    field, value_type = field.rsplit("__", 1)
-                    value = raw_value
-                except ValueError:
-                    logger.error(f"Invalid filter format: {filter_part}")
-                    continue
+            try:
+                json_field, value_type, raw_value = parse_custom_filter_part(filter_part)
+            except (ValueError, KeyError, TypeError):
+                logger.error(f"Invalid filter format: {filter_part}")
+                continue
 
-            value = value.get('name', '') if isinstance(value, dict) else self.__cast_value(value, value_type)
-            filter_kwargs = {f"{relation}__json_ext__{field}" if relation else f"json_ext__{field}": value}
-            query = query.filter(**filter_kwargs).distinct()
+            if isinstance(raw_value, dict):
+                value = raw_value.get('name', '')
+            else:
+                value = self.__cast_value(raw_value, value_type)
+
+            lookup_key = (
+                f"{relation}__json_ext__{json_field}"
+                if relation
+                else f"json_ext__{json_field}"
+            )
+            query = query.filter(**{lookup_key: value}).distinct()
         return query
+
+    def suggest_filter_values(self, field: str, search: str, limit: int = 20, **kwargs) -> List[dict]:
+        benefit_plan = self._resolve_benefit_plan_for_suggestions(**kwargs)
+        if not benefit_plan:
+            return []
+
+        field_def = self._field_definition_from_schema(benefit_plan, field)
+        if not field_def:
+            return []
+
+        field_type = field_def.get("type")
+        if field_def.get("typeLocation") or field_def.get("referential"):
+            return []
+
+        if field_type == "boolean":
+            return self._boolean_suggestions(search, limit)
+
+        if field_type in ("string", "integer", "numeric", "number", "decimal"):
+            return self._distinct_json_ext_suggestions(benefit_plan, field, search, limit)
+
+        return []
+
+    @staticmethod
+    def _resolve_benefit_plan_for_suggestions(**kwargs) -> Optional[BenefitPlan]:
+        benefit_plan_id = kwargs.get("uuid") or kwargs.get("benefit_plan_id")
+        additional_params = kwargs.get("additional_params") or {}
+        if not benefit_plan_id and isinstance(additional_params, dict):
+            benefit_plan_id = additional_params.get("benefitPlan") or additional_params.get("benefit_plan_id")
+        if not benefit_plan_id:
+            return None
+        return BenefitPlan.objects.filter(id=benefit_plan_id, is_deleted=False).first()
+
+    @staticmethod
+    def _field_definition_from_schema(benefit_plan: BenefitPlan, field: str) -> Optional[dict]:
+        schema = benefit_plan.beneficiary_data_schema or {}
+        properties = schema.get("properties") or {}
+        field_def = properties.get(field)
+        return field_def if isinstance(field_def, dict) else None
+
+    @staticmethod
+    def _boolean_suggestions(search: str, limit: int) -> List[dict]:
+        options = [
+            {"value": "true", "label": "true"},
+            {"value": "false", "label": "false"},
+        ]
+        needle = search.lower()
+        return [item for item in options if needle in item["label"]][:limit]
+
+    @staticmethod
+    def _distinct_json_ext_suggestions(
+        benefit_plan: BenefitPlan,
+        field: str,
+        search: str,
+        limit: int,
+    ) -> List[dict]:
+        lookup = f"json_ext__{field}__icontains"
+        queryset = (
+            Beneficiary.objects.filter(
+                benefit_plan=benefit_plan,
+                status=BeneficiaryStatus.ACTIVE,
+                is_deleted=False,
+            )
+            .exclude(**{f"json_ext__{field}": None})
+            .filter(**{lookup: search})
+            .values_list(f"json_ext__{field}", flat=True)
+            .distinct()[: limit * 3]
+        )
+
+        suggestions = []
+        seen = set()
+        needle = search.lower()
+        for raw_value in queryset:
+            label = BenefitPlanCustomFilterWizard._format_suggestion_label(raw_value)
+            if not label:
+                continue
+            if needle not in label.lower():
+                continue
+            value = BenefitPlanCustomFilterWizard._format_suggestion_value(raw_value)
+            key = (value, label)
+            if key in seen:
+                continue
+            seen.add(key)
+            suggestions.append({"value": value, "label": label})
+            if len(suggestions) >= limit:
+                break
+        return suggestions
+
+    @staticmethod
+    def _format_suggestion_label(raw_value) -> str:
+        if isinstance(raw_value, dict):
+            for candidate_key in ("name", "code", "label", "uuid"):
+                candidate = raw_value.get(candidate_key)
+                if candidate:
+                    return str(candidate)
+            return str(raw_value)
+        if raw_value is None:
+            return ""
+        return str(raw_value).strip()
+
+    @staticmethod
+    def _format_suggestion_value(raw_value) -> str:
+        if isinstance(raw_value, dict):
+            if raw_value.get("name") is not None:
+                return str(raw_value["name"])
+            if raw_value.get("code") is not None:
+                return str(raw_value["code"])
+            if raw_value.get("uuid") is not None:
+                return str(raw_value["uuid"])
+            return json.dumps(raw_value, ensure_ascii=False)
+        if raw_value is None:
+            return ""
+        return str(raw_value).strip()
 
     def __process_schema_and_build_tuple(
             self,
