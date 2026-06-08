@@ -75,10 +75,13 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
                 logger.error(f"Invalid filter format: {filter_part}")
                 continue
 
-            if isinstance(raw_value, dict):
-                value = raw_value.get('name', '')
-            else:
-                value = self.__cast_value(raw_value, value_type)
+            value = self._resolve_filter_value(raw_value, value_type)
+            if value == "" and isinstance(raw_value, dict):
+                logger.warning(
+                    "Location filter value dict has no name/code for field path %s: %s",
+                    json_field,
+                    raw_value,
+                )
 
             lookup_key = (
                 f"{relation}__json_ext__{json_field}"
@@ -98,14 +101,25 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
             return []
 
         field_type = field_def.get("type")
-        if field_def.get("typeLocation") or field_def.get("referential"):
-            return []
+        has_location_fallback = bool(field_def.get("typeLocation") or field_def.get("referential"))
 
         if field_type == "boolean":
             return self._boolean_suggestions(search, limit)
 
         if field_type in ("string", "integer", "numeric", "number", "decimal"):
-            return self._distinct_json_ext_suggestions(benefit_plan, field, search, limit)
+            # Mode A (prioritaire) : valeurs texte déjà présentes dans json_ext
+            suggestions = self._distinct_json_ext_suggestions(
+                benefit_plan, field, search, limit, relation="individual"
+            )
+            if not suggestions:
+                suggestions = self._distinct_json_ext_suggestions(
+                    benefit_plan, field, search, limit, relation=None
+                )
+            if suggestions:
+                return suggestions
+            # Mode B : sélecteur location (typeLocation / referential) si aucune valeur texte
+            if has_location_fallback:
+                return []
 
         return []
 
@@ -136,22 +150,44 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
         return [item for item in options if needle in item["label"]][:limit]
 
     @staticmethod
+    def _json_ext_field_path(field: str, relation: Optional[str] = None) -> str:
+        if relation:
+            return f"{relation}__json_ext__{field}"
+        return f"json_ext__{field}"
+
+    def _resolve_filter_value(self, raw_value, value_type: str):
+        """
+        Mode A : chaîne ou scalaire issu de json_ext.
+        Mode B : objet location {name, code, ...} — on filtre sur le nom, puis le code.
+        """
+        if isinstance(raw_value, dict):
+            for key in ("name", "code", "label"):
+                candidate = raw_value.get(key)
+                if candidate is not None and str(candidate).strip():
+                    return str(candidate).strip()
+            return ""
+        return self.__cast_value(raw_value, value_type)
+
+    @staticmethod
     def _distinct_json_ext_suggestions(
         benefit_plan: BenefitPlan,
         field: str,
         search: str,
         limit: int,
+        relation: Optional[str] = None,
     ) -> List[dict]:
-        lookup = f"json_ext__{field}__icontains"
+        field_path = BenefitPlanCustomFilterWizard._json_ext_field_path(field, relation)
+        lookup = f"{field_path}__icontains"
         queryset = (
             Beneficiary.objects.filter(
                 benefit_plan=benefit_plan,
                 status=BeneficiaryStatus.ACTIVE,
                 is_deleted=False,
             )
-            .exclude(**{f"json_ext__{field}": None})
+            .exclude(**{f"{field_path}__isnull": True})
+            .exclude(**{field_path: ""})
             .filter(**{lookup: search})
-            .values_list(f"json_ext__{field}", flat=True)
+            .values_list(field_path, flat=True)
             .distinct()[: limit * 3]
         )
 
