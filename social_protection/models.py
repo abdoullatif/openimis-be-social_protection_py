@@ -107,6 +107,59 @@ class GroupBeneficiary(core_models.HistoryBusinessModel):
         return queryset.filter(group__in=group_queryset)
 
 
+class BeneficiaryChangeLog(core_models.HistoryModel):
+    """
+    Journal des ajouts / mises à jour / suppressions de bénéficiaires
+    destinés à la synchronisation vers l'opérateur de paiement.
+    """
+
+    class Operation(models.TextChoices):
+        CREATE = "CREATE", _("CREATE")
+        UPDATE = "UPDATE", _("UPDATE")
+        DELETE = "DELETE", _("DELETE")
+
+    class Source(models.TextChoices):
+        CSV_UPLOAD = "CSV_UPLOAD", _("CSV_UPLOAD")
+        CSV_UPDATE = "CSV_UPDATE", _("CSV_UPDATE")
+        GRAPHQL = "GRAPHQL", _("GRAPHQL")
+        ENROLLMENT = "ENROLLMENT", _("ENROLLMENT")
+
+    class SyncStatus(models.TextChoices):
+        PENDING = "PENDING", _("PENDING")
+        QUEUED = "QUEUED", _("QUEUED")
+        SENT = "SENT", _("SENT")
+        FAILED = "FAILED", _("FAILED")
+        SKIPPED = "SKIPPED", _("SKIPPED")
+
+    benefit_plan = models.ForeignKey(BenefitPlan, models.DO_NOTHING, null=False)
+    beneficiary = models.ForeignKey(Beneficiary, models.DO_NOTHING, null=True, blank=True)
+    individual = models.ForeignKey(Individual, models.DO_NOTHING, null=True, blank=True)
+    upload_record = models.ForeignKey(
+        BenefitPlanDataUploadRecords, models.DO_NOTHING, null=True, blank=True
+    )
+    operation = models.CharField(max_length=16, choices=Operation.choices, null=False)
+    source = models.CharField(max_length=32, choices=Source.choices, null=False)
+    code_menage = models.CharField(max_length=255, null=True, blank=True, db_index=True)
+    snapshot_before = models.JSONField(blank=True, null=True, default=dict)
+    snapshot_after = models.JSONField(blank=True, null=True, default=dict)
+    changed_fields = models.JSONField(blank=True, null=True, default=list)
+    payload = models.JSONField(blank=True, null=True, default=dict)
+    sync_status = models.CharField(
+        max_length=16,
+        choices=SyncStatus.choices,
+        default=SyncStatus.PENDING,
+        db_index=True,
+    )
+    synced_at = models.DateTimeField(null=True, blank=True)
+    sync_attempts = models.PositiveIntegerField(default=0)
+    sync_error = models.JSONField(blank=True, null=True, default=dict)
+    sync_batch_id = models.UUIDField(null=True, blank=True, db_index=True)
+    operator_response = models.JSONField(blank=True, null=True, default=dict)
+
+    def __str__(self):
+        return f"{self.operation} {self.code_menage or self.beneficiary_id} [{self.sync_status}]"
+
+
 class JSONUpdate(Func):
     function = 'JSONB_SET'
     arity = 3

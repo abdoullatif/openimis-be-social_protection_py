@@ -26,6 +26,13 @@ def process_update_valid_beneficiaries_workflow(user_uuid, benefit_plan_uuid, up
             # TO-DO - add update mode for group update upload
             pass
     BeneficiaryImportService(user).synchronize_data_for_reporting(upload_uuid, benefit_plan)
+    try:
+        from social_protection.operator_sync import capture_changes_from_upload
+        capture_changes_from_upload(user, benefit_plan, upload_uuid, accepted=accepted)
+    except Exception:
+        logger.exception(
+            "Failed to capture beneficiary change logs after update upload=%s", upload_uuid
+        )
 
 
 upload_sql = """     

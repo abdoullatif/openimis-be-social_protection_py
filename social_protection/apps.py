@@ -56,6 +56,9 @@ DEFAULT_CONFIG = {
     "social_protection_masking_enabled": True,
     "enable_python_workflows": True,
     "default_beneficiary_status": "POTENTIAL",
+
+    # Champs autorisés dans le payload sync opérateur (liste vide = tous)
+    "operator_sync_fields": [],
 }
 
 
@@ -104,6 +107,8 @@ class SocialProtectionConfig(AppConfig):
     social_protection_masking_enabled = None
 
     default_beneficiary_status = None
+
+    operator_sync_fields = None
 
     def ready(self):
         from core.models import ModuleConfiguration

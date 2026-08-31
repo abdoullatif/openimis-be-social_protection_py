@@ -10,7 +10,13 @@ from core import prefix_filterset, ExtendedConnection
 from individual.gql_queries import IndividualGQLType, GroupGQLType, \
     IndividualDataSourceUploadGQLType
 from social_protection.apps import SocialProtectionConfig
-from social_protection.models import Beneficiary, BenefitPlan, GroupBeneficiary, BenefitPlanDataUploadRecords
+from social_protection.models import (
+    Beneficiary,
+    BenefitPlan,
+    GroupBeneficiary,
+    BenefitPlanDataUploadRecords,
+    BeneficiaryChangeLog,
+)
 
 
 def _have_permissions(user, permission):
@@ -200,3 +206,33 @@ class BenefitPlanHistoryGQLType(DjangoObjectType, JsonExtMixin):
 
     def resolve_has_payment_plans(self, info):
         return PaymentPlan.objects.filter(benefit_plan_id=self.id).exists()
+
+
+class BeneficiaryChangeLogGQLType(DjangoObjectType, JsonExtMixin):
+    uuid = graphene.String(source='uuid')
+
+    class Meta:
+        model = BeneficiaryChangeLog
+        interfaces = (graphene.relay.Node,)
+        filter_fields = {
+            "id": ["exact"],
+            "operation": ["exact", "iexact"],
+            "source": ["exact", "iexact"],
+            "sync_status": ["exact", "iexact"],
+            "code_menage": ["exact", "iexact", "startswith", "istartswith", "contains", "icontains"],
+            "date_created": ["exact", "lt", "lte", "gt", "gte"],
+            "date_updated": ["exact", "lt", "lte", "gt", "gte"],
+            "synced_at": ["exact", "lt", "lte", "gt", "gte", "isnull"],
+            "is_deleted": ["exact"],
+            "sync_batch_id": ["exact"],
+            "benefit_plan": ["exact"],
+            "beneficiary": ["exact"],
+            "individual": ["exact"],
+            "upload_record": ["exact"],
+            **prefix_filterset("benefit_plan__", {
+                "id": ["exact"],
+                "code": ["exact", "iexact", "startswith", "istartswith", "contains", "icontains"],
+                "name": ["exact", "iexact", "contains", "icontains"],
+            }),
+        }
+        connection_class = ExtendedConnection

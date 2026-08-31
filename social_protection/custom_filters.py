@@ -3,6 +3,7 @@ import re
 import json
 
 from collections import namedtuple
+from django.db.models import Q
 from django.db.models.query import QuerySet
 from typing import Any, List, Optional
 
@@ -81,6 +82,7 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
 
         :return: The updated queryset with additional filters applied for example: Queryset[Beneficiary].
         """
+        grouped_by_field = {}
         for filter_part in custom_filters:
             try:
                 json_field, value_type, raw_value = parse_custom_filter_part(filter_part)
@@ -95,14 +97,25 @@ class BenefitPlanCustomFilterWizard(CustomFilterWizardInterface):
                     json_field,
                     raw_value,
                 )
+                continue
 
-            lookup_key = (
-                f"{relation}__json_ext__{json_field}"
-                if relation
-                else f"json_ext__{json_field}"
-            )
-            query = query.filter(**{lookup_key: value}).distinct()
-        return query
+            if "__" in json_field:
+                field_name, lookup = json_field.rsplit("__", 1)
+            else:
+                field_name, lookup = json_field, "exact"
+
+            prefix = f"{relation}__json_ext__" if relation else "json_ext__"
+            field_q = Q(**{f"{prefix}{field_name}__{lookup}": value})
+            # json_ext location values may be stored as {name, code} objects
+            field_q |= Q(**{f"{prefix}{field_name}__name__{lookup}": value})
+            grouped_by_field.setdefault(field_name, []).append(field_q)
+
+        for q_list in grouped_by_field.values():
+            combined = q_list[0]
+            for extra in q_list[1:]:
+                combined |= extra
+            query = query.filter(combined)
+        return query.distinct()
 
     def suggest_filter_values(self, field: str, search: str, limit: int = 20, **kwargs) -> List[dict]:
         search = (search or "").strip()

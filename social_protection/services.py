@@ -122,7 +122,20 @@ class BeneficiaryService(BaseService, CheckerLogicServiceMixin):
 
     @register_service_signal('beneficiary_service.delete')
     def delete(self, obj_data):
-        return super().delete(obj_data)
+        beneficiary_id = obj_data.get('id')
+        beneficiary = Beneficiary.objects.filter(id=beneficiary_id).first()
+        result = super().delete(obj_data)
+        if beneficiary:
+            try:
+                from social_protection.operator_sync import capture_delete_from_beneficiary
+                # Recharger au cas où le soft-delete a modifié l'instance
+                beneficiary.refresh_from_db()
+                capture_delete_from_beneficiary(self.user, beneficiary)
+            except Exception:
+                logger.exception(
+                    "Failed to capture DELETE change log for beneficiary=%s", beneficiary_id
+                )
+        return result
 
     def _business_data_serializer(self, data):
         def serialize(key, value):

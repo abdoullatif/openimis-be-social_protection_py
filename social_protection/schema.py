@@ -26,12 +26,12 @@ from social_protection.gql_queries import (
     BenefitPlanGQLType,
     BeneficiaryGQLType, GroupBeneficiaryGQLType,
     BenefitPlanDataUploadQGLType, BenefitPlanSchemaFieldsGQLType,
-    BenefitPlanHistoryGQLType
+    BenefitPlanHistoryGQLType, BeneficiaryChangeLogGQLType
 )
 from social_protection.export_mixin import ExportableSocialProtectionQueryMixin
 from social_protection.models import (
     BenefitPlan,
-    Beneficiary, GroupBeneficiary, BenefitPlanDataUploadRecords
+    Beneficiary, GroupBeneficiary, BenefitPlanDataUploadRecords, BeneficiaryChangeLog
 )
 from social_protection.validation import validate_bf_unique_code, validate_bf_unique_name
 import graphene_django_optimizer as gql_optimizer
@@ -108,6 +108,14 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
         dateValidTo__Lte=graphene.DateTime(),
         applyDefaultValidityFilter=graphene.Boolean(),
         client_mutation_id=graphene.String()
+    )
+
+    beneficiary_change_log = OrderedDjangoFilterConnectionField(
+        BeneficiaryChangeLogGQLType,
+        orderBy=graphene.List(of_type=graphene.String),
+        dateValidFrom__Gte=graphene.DateTime(),
+        dateValidTo__Lte=graphene.DateTime(),
+        applyDefaultValidityFilter=graphene.Boolean(),
     )
 
     bf_code_validity = graphene.Field(
@@ -397,6 +405,15 @@ class Query(ExportableSocialProtectionQueryMixin, graphene.ObjectType):
             SocialProtectionConfig.gql_beneficiary_search_perms
         )
         query = BenefitPlanDataUploadRecords.objects.filter(*filters)
+        return gql_optimizer.query(query, info)
+
+    def resolve_beneficiary_change_log(self, info, **kwargs):
+        filters = append_validity_filter(**kwargs)
+        Query._check_permissions(
+            info.context.user,
+            SocialProtectionConfig.gql_beneficiary_search_perms
+        )
+        query = BeneficiaryChangeLog.objects.filter(*filters)
         return gql_optimizer.query(query, info)
 
     def resolve_benefit_plan_schema_field(self, info, **kwargs):

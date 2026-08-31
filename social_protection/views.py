@@ -243,6 +243,42 @@ def synchronize_data_for_reporting(request):
         return Response({'success': False, 'error': str(exc)}, status=500)
 
 
+@api_view(["POST"])
+@permission_classes([check_user_rights(SocialProtectionConfig.gql_beneficiary_update_perms, )])
+def send_beneficiary_changes_to_operator(request):
+    """
+    Envoie les BeneficiaryChangeLog PENDING/FAILED vers l'opérateur.
+    Body JSON:
+      {
+        "change_ids": ["uuid", ...] | null,
+        "benefit_plan_id": "uuid" | null,
+        "only_pending": true,
+        "operations": ["CREATE", "UPDATE", "DELETE"] | null,
+        "include_failed": true
+      }
+    """
+    try:
+        from social_protection.operator_sync import BeneficiaryOperatorSyncService
+
+        user = request.user
+        data = request.data or {}
+        result = BeneficiaryOperatorSyncService(user).send_changes(
+            change_ids=data.get("change_ids"),
+            benefit_plan_id=data.get("benefit_plan_id"),
+            only_pending=data.get("only_pending", True),
+            operations=data.get("operations"),
+            include_failed=data.get("include_failed", True),
+        )
+        http_status = status.HTTP_200_OK
+        return Response(result, status=http_status)
+    except ValueError as exc:
+        logger.error("Error while syncing beneficiaries to operator", exc_info=exc)
+        return Response({"success": False, "error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        logger.error("Unexpected error while syncing beneficiaries to operator", exc_info=exc)
+        return Response({"success": False, "error": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 def _resolve_import_beneficiaries_args(request):
     import_file = request.FILES.get('file')
     benefit_plan_uuid = request.POST.get('benefit_plan')
