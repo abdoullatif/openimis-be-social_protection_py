@@ -16,6 +16,9 @@ TECHNICAL_FIELDS = {
     "validations",
     "individual_id",
     "beneficiary_data_source",
+    "code_menage",
+    "codeMenage",
+    "CodeMenage",
 }
 
 # Mapping champs internes → contrat opérateur (manuel API)
@@ -31,22 +34,37 @@ FIELD_ALIAS = {
     "location_code": "locationCode",
     "location_name": "locationName",
     "numero_paie": "numeroPaie",
-    "code_menage": "codeMenage",
 }
+
+# Découpage administratif toujours présent dans data (CREATE)
+ADMIN_LOCATION_FIELDS = ("region", "prefecture", "sous_prefecture", "district")
+BUSINESS_KEY = "id_ben_principal"
 
 
 def _alias(key: str) -> str:
     return FIELD_ALIAS.get(key, key)
 
 
-def extract_code_menage(json_ext, fallback=None):
+def extract_id_ben_principal(json_ext, fallback=None):
     if not isinstance(json_ext, dict):
         return fallback
-    for key in ("code_menage", "codeMenage", "CodeMenage"):
+    for key in ("id_ben_principal", "idBenPrincipal"):
         value = json_ext.get(key)
         if value not in (None, ""):
             return str(value)
     return fallback
+
+
+def ensure_admin_locations(data, extra=None):
+    """Garantit region / prefecture / sous_prefecture / district dans data."""
+    data = dict(data or {})
+    extra = extra or {}
+    for key in ADMIN_LOCATION_FIELDS:
+        value = data.get(key)
+        if value in (None, ""):
+            value = extra.get(key)
+        data[key] = normalize_value(value) if value not in (None, "") else None
+    return data
 
 
 def normalize_value(value):
@@ -81,13 +99,13 @@ def build_snapshot_from_beneficiary(beneficiary):
                 continue
             data[_alias(key)] = normalize_value(value)
 
-    code_menage = extract_code_menage(
+    id_ben_principal = extract_id_ben_principal(
         beneficiary.json_ext,
-        extract_code_menage(individual.json_ext if individual else None),
+        extract_id_ben_principal(individual.json_ext if individual else None),
     )
-    if code_menage:
-        data["codeMenage"] = code_menage
-    return data
+    if id_ben_principal:
+        data[BUSINESS_KEY] = id_ben_principal
+    return ensure_admin_locations(data)
 
 
 def build_snapshot_from_row(row: dict):
@@ -99,10 +117,10 @@ def build_snapshot_from_row(row: dict):
         if key in TECHNICAL_FIELDS:
             continue
         data[_alias(key)] = normalize_value(value)
-    code_menage = extract_code_menage(row)
-    if code_menage:
-        data["codeMenage"] = code_menage
-    return data
+    id_ben_principal = extract_id_ben_principal(row)
+    if id_ben_principal:
+        data[BUSINESS_KEY] = id_ben_principal
+    return ensure_admin_locations(data)
 
 
 def compute_changed_fields(before: dict, after: dict):
@@ -111,9 +129,9 @@ def compute_changed_fields(before: dict, after: dict):
     keys = set(before.keys()) | set(after.keys())
     changed = []
     for key in sorted(keys):
-        if key in TECHNICAL_FIELDS or key == "codeMenage":
-            # codeMenage toujours présent dans le payload UPDATE, pas listé comme "change"
-            if key == "codeMenage":
+        if key in TECHNICAL_FIELDS or key == BUSINESS_KEY:
+            # id_ben_principal est toujours à la racine du payload UPDATE
+            if key == BUSINESS_KEY:
                 continue
             if key in TECHNICAL_FIELDS:
                 continue
@@ -128,36 +146,41 @@ def filter_sync_fields(data: dict):
     if not allowed:
         return deepcopy(data or {})
     allowed_set = set(allowed)
-    return {k: v for k, v in (data or {}).items() if k in allowed_set or k == "codeMenage"}
-
-
-def build_create_payload(request_id, code_menage, beneficiary_id, data: dict):
     return {
-        "requestId": str(request_id),
-        "operation": "CREATE",
-        "codeMenage": code_menage,
-        "beneficiaryId": str(beneficiary_id) if beneficiary_id else None,
-        "data": filter_sync_fields(data),
+        k: v
+        for k, v in (data or {}).items()
+        if k in allowed_set or k == BUSINESS_KEY or k in ADMIN_LOCATION_FIELDS
     }
 
 
-def build_update_payload(request_id, code_menage, beneficiary_id, changes: dict):
+def build_create_payload(request_id, id_ben_principal, beneficiary_id, data: dict):
+    payload_data = ensure_admin_locations(filter_sync_fields(data))
+    payload_data.pop(BUSINESS_KEY, None)
+    return {
+        "requestId": str(request_id),
+        "operation": "CREATE",
+        "id_ben_principal": id_ben_principal,
+        "beneficiaryId": str(beneficiary_id) if beneficiary_id else None,
+        "data": payload_data,
+    }
+
+
+def build_update_payload(request_id, id_ben_principal, beneficiary_id, changes: dict):
     filtered = filter_sync_fields(changes)
-    # codeMenage ne doit pas être dans changes
-    filtered.pop("codeMenage", None)
+    filtered.pop(BUSINESS_KEY, None)
     return {
         "requestId": str(request_id),
         "operation": "UPDATE",
-        "codeMenage": code_menage,
+        "id_ben_principal": id_ben_principal,
         "beneficiaryId": str(beneficiary_id) if beneficiary_id else None,
         "changes": filtered,
     }
 
 
-def build_delete_payload(request_id, code_menage, beneficiary_id):
+def build_delete_payload(request_id, id_ben_principal, beneficiary_id):
     return {
         "requestId": str(request_id),
         "operation": "DELETE",
-        "codeMenage": code_menage,
+        "id_ben_principal": id_ben_principal,
         "beneficiaryId": str(beneficiary_id) if beneficiary_id else None,
     }

@@ -13,7 +13,7 @@ from social_protection.operator_sync.payload_builder import (
     build_snapshot_from_row,
     build_update_payload,
     compute_changed_fields,
-    extract_code_menage,
+    extract_id_ben_principal,
 )
 
 logger = logging.getLogger(__name__)
@@ -123,12 +123,16 @@ def _capture_create(user, benefit_plan, upload_record, source, row):
         return None
 
     snapshot = build_snapshot_from_beneficiary(beneficiary)
+    row_snapshot = build_snapshot_from_row(row)
     if not snapshot:
-        snapshot = build_snapshot_from_row(row)
+        snapshot = row_snapshot
+    else:
+        from social_protection.operator_sync.payload_builder import ensure_admin_locations
+        snapshot = ensure_admin_locations(snapshot, row_snapshot)
 
-    code_menage = extract_code_menage(snapshot, extract_code_menage(row))
+    id_ben_principal = extract_id_ben_principal(snapshot, extract_id_ben_principal(row))
     request_id = uuid.uuid4()
-    payload = build_create_payload(request_id, code_menage, beneficiary.id, snapshot)
+    payload = build_create_payload(request_id, id_ben_principal, beneficiary.id, snapshot)
 
     log = BeneficiaryChangeLog(
         benefit_plan=benefit_plan,
@@ -137,7 +141,7 @@ def _capture_create(user, benefit_plan, upload_record, source, row):
         upload_record=upload_record,
         operation=BeneficiaryChangeLog.Operation.CREATE,
         source=BeneficiaryChangeLog.Source.CSV_UPLOAD,
-        code_menage=code_menage,
+        code_menage=id_ben_principal,
         snapshot_before={},
         snapshot_after=snapshot,
         changed_fields=[],
@@ -211,15 +215,15 @@ def _capture_update(user, benefit_plan, upload_record, source, row):
     # Si pas d'historique fiable: considère les champs présents dans le CSV comme candidats
     if not before:
         row_snapshot = build_snapshot_from_row(row)
-        changed_fields = [k for k in row_snapshot.keys() if k != "codeMenage"]
+        changed_fields = [k for k in row_snapshot.keys() if k != "id_ben_principal"]
         changes = {k: after.get(k, row_snapshot.get(k)) for k in changed_fields}
     else:
         changed_fields = compute_changed_fields(before, after)
         changes = {k: after.get(k) for k in changed_fields}
 
-    code_menage = extract_code_menage(after, extract_code_menage(row))
+    id_ben_principal = extract_id_ben_principal(after, extract_id_ben_principal(row))
     request_id = uuid.uuid4()
-    payload = build_update_payload(request_id, code_menage, beneficiary.id, changes)
+    payload = build_update_payload(request_id, id_ben_principal, beneficiary.id, changes)
 
     log = BeneficiaryChangeLog(
         benefit_plan=benefit_plan,
@@ -228,7 +232,7 @@ def _capture_update(user, benefit_plan, upload_record, source, row):
         upload_record=upload_record,
         operation=BeneficiaryChangeLog.Operation.UPDATE,
         source=BeneficiaryChangeLog.Source.CSV_UPDATE,
-        code_menage=code_menage,
+        code_menage=id_ben_principal,
         snapshot_before=before,
         snapshot_after=after,
         changed_fields=changed_fields,
@@ -245,9 +249,9 @@ def capture_delete_from_beneficiary(user, beneficiary, source=BeneficiaryChangeL
     from social_protection.operator_sync.payload_builder import build_delete_payload
 
     snapshot = build_snapshot_from_beneficiary(beneficiary)
-    code_menage = extract_code_menage(snapshot)
+    id_ben_principal = extract_id_ben_principal(snapshot)
     request_id = uuid.uuid4()
-    payload = build_delete_payload(request_id, code_menage, beneficiary.id)
+    payload = build_delete_payload(request_id, id_ben_principal, beneficiary.id)
 
     log = BeneficiaryChangeLog(
         benefit_plan=beneficiary.benefit_plan,
@@ -256,7 +260,7 @@ def capture_delete_from_beneficiary(user, beneficiary, source=BeneficiaryChangeL
         upload_record=None,
         operation=BeneficiaryChangeLog.Operation.DELETE,
         source=source,
-        code_menage=code_menage,
+        code_menage=id_ben_principal,
         snapshot_before=snapshot,
         snapshot_after={},
         changed_fields=[],
